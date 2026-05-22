@@ -27,11 +27,18 @@ st.markdown("---")
 
 # Load data
 @st.cache_data
+# Load data
+@st.cache_data
 def load_data():
-    df = pd.read_csv("heart.csv")
-    # Drop 'year' column if it exists (it's metadata, not a feature)
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(BASE_DIR, "heart.csv")  # make sure name matches EXACTLY
+    
+    df = pd.read_csv(file_path)
+    
+    # Drop 'year' column if it exists
     if 'year' in df.columns:
         df = df.drop('year', axis=1)
+    
     return df
 
 dataset = load_data()
@@ -445,4 +452,5 @@ elif page == "Results":
 # Footer
 st.markdown("---")
 st.markdown("**Technology Stack:** Python, Scikit-learn, XGBoost, Streamlit")
+
 
