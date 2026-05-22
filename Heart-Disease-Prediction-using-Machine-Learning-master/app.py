@@ -11,6 +11,8 @@ from sklearn.metrics import accuracy_score
 import xgboost as xgb
 import warnings
 warnings.filterwarnings('ignore')
+import os
+import pickle
 
 # Page configuration
 st.set_page_config(
@@ -33,6 +35,26 @@ def load_data():
     return df
 
 dataset = load_data()
+
+# Attempt to load previously saved models (if any)
+def load_saved_models(path="models.pkl"):
+    if os.path.exists(path):
+        try:
+            with open(path, "rb") as f:
+                saved = pickle.load(f)
+            # Load into session state
+            st.session_state['models'] = saved.get('models', {})
+            st.session_state['results'] = saved.get('results', {})
+            st.session_state['X_test'] = saved.get('X_test', None)
+            st.session_state['Y_test'] = saved.get('Y_test', None)
+            return True
+        except Exception as e:
+            st.warning(f"Failed to load saved models: {e}")
+            return False
+    return False
+
+# Try loading saved models at startup
+_ = load_saved_models()
 
 # Sidebar for navigation
 st.sidebar.title("Navigation")
@@ -203,6 +225,19 @@ elif page == "Model Training":
         }
         st.session_state['X_test'] = X_test
         st.session_state['Y_test'] = Y_test
+        # Save trained models and results to disk
+        try:
+            save_obj = {
+                'models': st.session_state['models'],
+                'results': st.session_state.get('results', {}),
+                'X_test': X_test,
+                'Y_test': Y_test
+            }
+            with open('models.pkl', 'wb') as f:
+                pickle.dump(save_obj, f)
+            st.success("Trained models saved to models.pkl")
+        except Exception as e:
+            st.warning(f"Could not save models to disk: {e}")
         
         st.success("Selected models trained successfully!")
     
@@ -231,8 +266,10 @@ elif page == "Make Prediction":
     st.header("🔮 Make a Prediction")
     
     if 'models' not in st.session_state:
-        st.warning("⚠️ Please train the models first from the 'Model Training' page.")
-    else:
+        loaded = load_saved_models()
+        if not loaded:
+            st.warning("⚠️ Please train the models first from the 'Model Training' page or train now.")
+    if 'models' in st.session_state:
         st.subheader("Enter Patient Information")
         
         col1, col2 = st.columns(2)
@@ -261,14 +298,56 @@ elif page == "Make Prediction":
         # Prepare input
         input_data = np.array([[age, sex, cp, trestbps, chol, fbs, restecg, 
                               thalach, exang, oldpeak, slope, ca, thal]])
-        
+
+        # Model selection: allow user override, default = auto-select best by accuracy
+        display_names = ['Random Forest', 'Logistic Regression', 'Naive Bayes', 'XGBoost']
+        display_to_key = {'Random Forest': 'rf', 'Logistic Regression': 'lr', 'Naive Bayes': 'nb', 'XGBoost': 'xgb'}
+
+        # Determine auto best model name if results available
+        auto_label = 'Auto (Random Forest)'
+        if 'results' in st.session_state and st.session_state['results']:
+            try:
+                best_model_name = max(st.session_state['results'], key=st.session_state['results'].get)
+                auto_label = f"Auto ({best_model_name})"
+            except Exception:
+                auto_label = 'Auto (Random Forest)'
+
+        options = [auto_label] + display_names
+        selected = st.selectbox('Model to use for main prediction', options, index=0)
+
         if st.button("Predict Heart Disease"):
             st.subheader("Prediction Results")
-            
-            # Get best model (Random Forest)
-            rf_model = st.session_state['models']['rf']
-            prediction = rf_model.predict(input_data)[0]
-            probability = rf_model.predict_proba(input_data)[0]
+
+            # Resolve chosen model key
+            chosen_key = None
+            if selected.startswith('Auto'):
+                # map best_model_name (human) to model key
+                if 'results' in st.session_state and st.session_state['results']:
+                    best_model_name = max(st.session_state['results'], key=st.session_state['results'].get)
+                    chosen_key = display_to_key.get(best_model_name, 'rf')
+                else:
+                    chosen_key = 'rf'
+            else:
+                chosen_key = display_to_key.get(selected, 'rf')
+
+            # Fallback to any available model if selected not present
+            models_available = st.session_state.get('models', {})
+            if chosen_key not in models_available:
+                # pick first available model
+                if models_available:
+                    chosen_key = list(models_available.keys())[0]
+                else:
+                    st.error('No models available. Please train models first.')
+                    chosen_key = None
+
+            if chosen_key is not None:
+                model = st.session_state['models'][chosen_key]
+                prediction = model.predict(input_data)[0]
+                # try predict_proba, fallback to decision
+                try:
+                    probability = model.predict_proba(input_data)[0]
+                except Exception:
+                    probability = None
             
             col1, col2, col3 = st.columns(3)
             
@@ -279,10 +358,16 @@ elif page == "Make Prediction":
                     st.success("✅ No Heart Disease")
             
             with col2:
-                st.metric("Probability of Heart Disease", f"{probability[1]*100:.2f}%")
-            
+                if probability is not None:
+                    st.metric("Probability of Heart Disease", f"{probability[1]*100:.2f}%")
+                else:
+                    st.write("Probability: N/A for selected model")
+
             with col3:
-                st.metric("Probability of No Heart Disease", f"{probability[0]*100:.2f}%")
+                if probability is not None:
+                    st.metric("Probability of No Heart Disease", f"{probability[0]*100:.2f}%")
+                else:
+                    st.write("")
             
             # Show predictions from selected models
             st.subheader("Predictions from Selected Models")
